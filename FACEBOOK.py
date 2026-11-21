@@ -8,10 +8,10 @@ import re
 
 AUDIENCE_STYLES = {
     "normiki":    "prosty ale odważny język, trochę oceny, coś z obecnego życia, nie lubię chamstwa",
-    "boomers":    "narzekanie, nostalgia, kiedyś było lepiej, humor ale mocna krytyka, nie nawidzę zdrajców",
+    "boomers":    "narzekanie, nostalgia, kiedyś było lepiej, humor ale mocna krytyka, nie znoszę zdrajców",
     "młodzi":     "memy, krytyka, szybkie punchline'y, chaos, małe doświadczenie życiowe",
     "pracownicy": "frustracja, robota, obawy o utratę pracy, wątek patriotyczny, nie lubię prostactwa",
-    "hejterzy":   "ostry ton, ironia, krytyka, prawdziwi patrioci, więcej z historii,wiecej chamstwa,nie lubię prostactwa",
+    "hejterzy":   "ostry ton, ironia, krytyka, prawdziwi patrioci, więcej z historii, więcej chamstwa, nie lubię prostactwa",
 }
 
 # ===== SZABLONY POSTÓW =====
@@ -64,14 +64,18 @@ AUDIENCE_WORDS = {
     "boomers":    ["kiedyś", "norma", "rozsądek", "lepiej"],
     "młodzi":     ["xd", "hit", "drama", "mem"],
     "pracownicy": ["robota", "konkret", "rzeczywistość", "haruje"],
-    "hejterzy":   ["krytyka", "internet", "odpowiada", "patrioci", "farsa","rzeczywistość"],
+    "hejterzy":   ["krytyka", "internet", "odpowiada", "patrioci", "farsa", "rzeczywistość"],
 }
+
+WORD_RE = re.compile(r"\w+")
+
+def _contains_whole_word(text_low, word):
+    return re.search(rf"\b{re.escape(word)}\b", text_low) is not None
 
 def score_post(text, audience):
     text_low = text.lower()
-    words = re.findall(r"\w+", text_low)
+    words = WORD_RE.findall(text_low)
 
-    # 1. Długość w optymalnym przedziale (40–160 znaków = najlepszy zasięg)
     n = len(text)
     if 40 <= n <= 160:
         len_score = 10
@@ -80,17 +84,15 @@ def score_post(text, audience):
     else:
         len_score = 6
 
-    # 2. Pytanie na końcu = większy engagement
     question_bonus = 3 if "?" in text else 0
 
-    # 3. Trigger words (max 3)
-    trigger_score = min(sum(1 for t in TRIGGERS if t in text_low), 3) * 2
+    trigger_score = min(
+        sum(1 for t in TRIGGERS if _contains_whole_word(text_low, t)), 3
+    ) * 2
 
-    # 4. Zgodność z targetem (słowa kluczowe grupy)
     audience_words = AUDIENCE_WORDS.get(audience, [])
-    match_score = sum(2 for w in audience_words if w in text_low)
+    match_score = sum(2 for w in audience_words if _contains_whole_word(text_low, w))
 
-    # 5. Kara za powtórzenia (te same słowa 3+ razy)
     repetition_penalty = 0
     for w in set(words):
         if words.count(w) >= 3:
@@ -101,14 +103,14 @@ def score_post(text, audience):
 
 # ===== GENERATOR =====
 
-def generuj_posty(audience):
-    templates = TEMPLATES.get(audience, TEMPLATES["normiki"])
-    chosen = random.sample(templates, k=min(3, len(templates)))
-    posts = []
-    for tpl in chosen:
-        topic = random.choice(TOPICS)
-        posts.append(tpl.format(topic=topic))
-    return posts
+def generuj_posty(audience, n=3):
+    templates = TEMPLATES.get(audience)
+    if not templates:
+        raise ValueError(f"Nieznana grupa odbiorców: {audience!r}")
+
+    chosen = random.sample(templates, k=min(n, len(templates)))
+    topics = random.sample(TOPICS, k=len(chosen))
+    return [tpl.format(topic=t) for tpl, t in zip(chosen, topics)]
 
 # ===== APP =====
 
@@ -117,8 +119,11 @@ class App:
         self.root = root
         self.root.title("💣 VIRAL MACHINE (offline)")
         self.root.geometry("700x650")
+        self.root.minsize(550, 500)
         self.image = None
         self.build()
+        self.audience_var.trace_add("write", lambda *_: self.update_style_label())
+        self.update_style_label()
 
     def build(self):
         top = tk.Frame(self.root)
@@ -139,10 +144,19 @@ class App:
             fg="gray", font=("Arial", 8)
         ).pack()
 
-        self.audience_var = tk.StringVar(value="normiki")
+        tk.Label(top, text="Grupa odbiorców:", font=("Arial", 10)).pack(
+            pady=(10, 0)
+        )
+        self.audience_var = tk.StringVar(value=next(iter(AUDIENCE_STYLES)))
         tk.OptionMenu(
             top, self.audience_var, *AUDIENCE_STYLES.keys()
         ).pack(pady=5)
+
+        self.style_label = tk.Label(
+            top, text="", fg="#555", font=("Arial", 9, "italic"),
+            wraplength=600, justify="center"
+        )
+        self.style_label.pack(pady=2)
 
         self.generate_btn = tk.Button(
             top, text="🚀 GENERUJ", command=self.generate,
@@ -171,6 +185,9 @@ class App:
             bg="#F44336", fg="white", width=15
         ).pack(side="left", padx=10)
 
+    def update_style_label(self):
+        self.style_label.config(text=AUDIENCE_STYLES.get(self.audience_var.get(), ""))
+
     def pick(self):
         file = filedialog.askopenfilename(
             filetypes=[
@@ -181,39 +198,45 @@ class App:
         if file:
             self.image = file
             nazwa = os.path.basename(file)
-            self.img_label.config(text=f"📁 Zaimportowano:\n{nazwa}")
+            self.img_label.config(text=f"📂 Zaimportowano:\n{nazwa}")
 
     def generate(self):
         if not self.image:
-            messagebox.showwarning("Błąd", "Dodaj zdjęcie")
+            messagebox.showwarning("Błąd", "Najpierw dodaj zdjęcie")
             return
 
         audience = self.audience_var.get()
-        posts = generuj_posty(audience)
+        try:
+            posts = generuj_posty(audience)
+        except ValueError as e:
+            messagebox.showerror("Błąd", str(e))
+            return
         self.show_results(posts, audience)
 
     def show_results(self, posts, audience):
+        self.output.delete("1.0", tk.END)
         if not posts:
-            self.output.delete("1.0", tk.END)
             self.output.insert("1.0", "❌ Brak postów.")
             return
 
-        scored = [(p, score_post(p, audience)) for p in posts]
-        scored.sort(key=lambda x: x[1], reverse=True)
+        scored = sorted(
+            ((p, score_post(p, audience)) for p in posts),
+            key=lambda x: x[1], reverse=True,
+        )
 
-        out = ""
+        out = "🏆 NAJLEPSZY POST\n\n"
         for i, (post, score) in enumerate(scored, 1):
-            if i == 1:
-                out += "🏆 NAJLEPSZY POST\n\n"
-            out += f"===== WERSJA {i} =====\n"
+            if i > 1:
+                out += f"===== WERSJA {i} =====\n"
+            else:
+                out += "===== WERSJA 1 =====\n"
             out += f"SCORE: {score}/20\n\n"
             out += post + "\n\n"
 
-        self.output.delete("1.0", tk.END)
         self.output.insert("1.0", out)
 
     def copy(self):
-        text = self.output.get("1.0", tk.END)
+        text = self.output.get("1.0", "end-1c")
         if not text.strip():
             messagebox.showinfo("Info", "Nie ma tekstu.")
             return
